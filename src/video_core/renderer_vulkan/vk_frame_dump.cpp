@@ -959,9 +959,9 @@ void FrameDump::TickFrame() {
     manifest << fmt::format(R"({{"kind":"frame","frame":{},"seconds":{:.3f}}})", frame, elapsed)
              << '\n';
     writer = std::thread{[this] { WriterLoop(); }};
-    if (sampled && !device.IsPipelineStatisticsQuerySupported()) {
+    if (schedule.Sampled() && !device.IsPipelineStatisticsQuerySupported()) {
         LOG_WARNING(Render_Vulkan, "Frame dump: no pipelineStatisticsQuery, draws are not probed");
-    } else if (sampled) {
+    } else if (schedule.Sampled()) {
         // Pipeline statistics, not occlusion: games keep their own occlusion queries active.
         probe_pool = device.GetLogical().CreateQueryPool({
             .sType = VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO,
@@ -978,7 +978,6 @@ void FrameDump::TickFrame() {
             cmdbuf.ResetQueryPool(pool, 0, MAX_PROBES);
         });
     }
-    capturing = true;
     LOG_INFO(Render_Vulkan, "Frame dump: capturing frame {} ({:.1f} s after boot) into {}", frame,
              elapsed, directory.string());
 }
