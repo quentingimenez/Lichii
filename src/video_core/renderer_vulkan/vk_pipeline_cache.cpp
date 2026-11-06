@@ -7,14 +7,17 @@
 #include <algorithm>
 #include <chrono>
 #include <cstddef>
+#include <cstdlib>
 #include <fstream>
 #include <iostream>
 #include <memory>
 #include <span>
+#include <string>
 #include <thread>
 #include <vector>
 #include <bit>
 #include <numeric>
+#include <fmt/format.h>
 #include "common/cityhash.h"
 #include "common/scope_exit.h"
 #include "common/fs/fs.h"
@@ -30,6 +33,7 @@
 #include "video_core/engines/kepler_compute.h"
 #include "video_core/engines/maxwell_3d.h"
 #include "video_core/memory_manager.h"
+#include "video_core/nx2_debug_control.h"
 #include "video_core/pipeline_cache_files.h"
 #include "video_core/renderer_vulkan/async_draw_policy.h"
 #include "video_core/renderer_vulkan/fixed_pipeline_state.h"
@@ -744,6 +748,23 @@ ComputePipeline* PipelineCache::CurrentComputePipeline() {
         .shared_memory_size = qmd.shared_alloc,
         .workgroup_size{qmd.block_dim_x, qmd.block_dim_y, qmd.block_dim_z},
     };
+    // Reject a compute pipeline before vkCreateComputePipelines. The runtime reject in
+    // DispatchCompute is too late: the AMD Vulkan driver device-losses while creating the
+    // pipeline for Ocarina of Time's culling pass.
+    if (VideoCore::Nx2Debug::IsRejected(key.unique_hash)) {
+        LOG_ERROR(Render_Vulkan, "Skipping rejected compute pipeline {:016x}", key.unique_hash);
+        return nullptr;
+    }
+    static const std::string rejected_hashes = [] {
+        const char* text = std::getenv("EDEN_NX2_REJECT_HASH");
+        return text ? fmt::format(",{},", text) : std::string{};
+    }();
+    if (!rejected_hashes.empty() &&
+        rejected_hashes.find(fmt::format(",{:016x},", key.unique_hash)) != std::string::npos) {
+        LOG_ERROR(Render_Vulkan, "Skipping rejected compute pipeline {:016x} (EDEN_NX2_REJECT_HASH)",
+                  key.unique_hash);
+        return nullptr;
+    }
     const auto [pair, is_new]{compute_cache.try_emplace(key)};
     auto& entry{pair->second};
     if (is_new) {
