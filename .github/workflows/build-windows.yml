@@ -10,6 +10,7 @@ on:
       - custom/oot-upstream-noaa-unopt
       - custom/oot-v2
       - custom/oot-v4
+      - custom/oot-v7
     paths:
       - "src/**"
       - ".github/workflows/build-windows.yml"
