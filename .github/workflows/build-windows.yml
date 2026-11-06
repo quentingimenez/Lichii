@@ -6,6 +6,7 @@ on:
     branches:
       - custom/oot-veg
       - custom/oot-upstream
+      - custom/oot-upstream-noaa
     paths:
       - "src/**"
       - ".github/workflows/build-windows.yml"
