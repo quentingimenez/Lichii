@@ -13,8 +13,13 @@
 
 namespace VideoCommon {
 
-inline constexpr u32 OpenGLPipelineCacheVersion = 48;
-inline constexpr u32 VulkanPipelineCacheVersion = 53;
+// Bumped for the TIC decode fixes: translated shaders bake the decoded pixel format and the
+// image views bake the descriptor swizzle (the format=0 / wrong-swizzle green corruption), so
+// caches built before them must not be reused. Bumped again for the pool-read correction
+// (913d5994): serialized environments retain decoded texture types and formats, so a cache
+// produced by the previous build (48/53) would survive that correction.
+inline constexpr u32 OpenGLPipelineCacheVersion = 50;
+inline constexpr u32 VulkanPipelineCacheVersion = 54;
 
 // Official Eglantine (cache version 18 at c0cb3325) and this fork (a different version) both
 // used <shader dir>/<title>/vulkan.bin and vulkan_pipelines.bin. Each build deletes a file
