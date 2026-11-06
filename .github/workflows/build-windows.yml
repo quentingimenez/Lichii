@@ -49,9 +49,24 @@ jobs:
           $bin = (Get-ChildItem -Recurse -Filter sccache.exe (Join-Path $env:RUNNER_TEMP 'sccache')).DirectoryName
           $bin | Out-File -Append -Encoding utf8 $env:GITHUB_PATH
 
+      - name: Cache Vulkan SDK
+        id: vulkan-cache
+        uses: actions/cache@v5
+        with:
+          path: C:/VulkanSDK/1.4.341.1
+          key: vulkan-sdk-windows-1.4.341.1-v1
+
       - name: Install Vulkan SDK on Windows
+        if: steps.vulkan-cache.outputs.cache-hit != 'true'
         shell: pwsh
+        timeout-minutes: 10
         run: ./tools/windows/install-vulkan-sdk.ps1
+
+      - name: Set up Vulkan SDK
+        shell: pwsh
+        run: |
+          "VULKAN_SDK=C:/VulkanSDK/1.4.341.1" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "C:/VulkanSDK/1.4.341.1/Bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
 
       - name: Verify Vulkan tools on Windows
         shell: pwsh

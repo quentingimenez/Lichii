@@ -9,6 +9,7 @@
 #include "video_core/buffer_cache/uniform_cache_history.h"
 
 #include <algorithm>
+#include <atomic>
 #include <memory>
 #include <numeric>
 #include <stdexcept>
@@ -2620,15 +2621,24 @@ void BufferCache<P>::DeleteBuffer(BufferId buffer_id, bool do_not_mark) {
 template <class P>
 Binding BufferCache<P>::StorageBufferBinding(GPUVAddr ssbo_addr, u32 cbuf_index, bool is_written,
                                              bool native_pointer, bool table_pointer) const {
+    // EDEN_NX2_NO_TABLE_POOL: leave a pointer-table pool on the plain buffer path (A/B aid for
+    // the AMD device loss while Ocarina of Time loads a save). EDEN_NX2_TABLE_POOL_LOG logs the
+    // pool bindings the table path would use.
+    static const bool no_table_pool = std::getenv("EDEN_NX2_NO_TABLE_POOL") != nullptr;
+    static const bool log_table_pool = std::getenv("EDEN_NX2_TABLE_POOL_LOG") != nullptr;
+    const bool was_table_pointer = table_pointer;
+    if (no_table_pool) {
+        table_pointer = false;
+    }
     const GPUVAddr gpu_addr = gpu_memory->Read<u64>(ssbo_addr);
 
     if (gpu_addr == 0) {
         return NULL_BINDING;
     }
 
+    const u32 memory_layout_size =
+        static_cast<u32>(gpu_memory->GetMemoryLayoutSize(gpu_addr));
     u32 size = [&]() {
-        const u32 memory_layout_size =
-            static_cast<u32>(gpu_memory->GetMemoryLayoutSize(gpu_addr));
         // A pointer read from a table in memory is the base of an object pool, read anywhere in
         // it (Ocarina of Time's grass instances lie 12-18 MiB past theirs): bound to the end of
         // its mapping, up to 24 MiB. The 8 MiB cap made those reads return 0 and culled every
@@ -2657,6 +2667,16 @@ Binding BufferCache<P>::StorageBufferBinding(GPUVAddr ssbo_addr, u32 cbuf_index,
         // Stop where the mapping or its device range does: the binding is one device range, and
         // a written one isn't split into separate ranges without sparse sources.
         size = static_cast<u32>(gpu_memory->MaxContinuousRange(gpu_addr, size));
+    }
+    if (log_table_pool && (was_table_pointer || no_table_pool)) {
+        static std::atomic<u32> logged{};
+        if (logged.fetch_add(1, std::memory_order_relaxed) < 200) {
+            LOG_INFO(HW_GPU,
+                     "Table pool binding: table={} disabled={} ssbo={:#x} gpu={:#x} layout={:#x} "
+                     "size={:#x} written={} native={}",
+                     was_table_pointer, no_table_pool, ssbo_addr, gpu_addr, memory_layout_size,
+                     size, is_written, native_pointer);
+        }
     }
 
     // Alignment only applies to the offset of the buffer
