@@ -1,4 +1,4 @@
-# SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project
+﻿# SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project
 # SPDX-License-Identifier: GPL-3.0-or-later
 
 # SPDX-FileCopyrightText: 2023 yuzu Emulator Project
@@ -34,14 +34,27 @@ if (Test-Path $VULKAN_SDK) {
 }
 
 echo "Downloading Vulkan SDK $VulkanSDKVer from $Uri"
-$WebClient = New-Object System.Net.WebClient
-$WebClient.DownloadFile($Uri, $Destination)
+for ($Attempt = 1; $Attempt -le 3; $Attempt++) {
+    try {
+        Invoke-WebRequest -Uri $Uri -OutFile $Destination -TimeoutSec 300 -UseBasicParsing
+        break
+    } catch {
+        Write-Host "Download attempt $Attempt failed: $_"
+        if ($Attempt -eq 3) { throw }
+        Start-Sleep -Seconds 10
+    }
+}
 echo "Finished downloading $ExeFile"
 
 $Arguments = "--root `"$VULKAN_SDK`" --accept-licenses --default-answer --confirm-command install"
 
 echo "Installing Vulkan SDK $VulkanSDKVer"
-$InstallProcess = Start-Process -FilePath $Destination -NoNewWindow -PassThru -Wait -ArgumentList $Arguments
+$InstallProcess = Start-Process -FilePath $Destination -NoNewWindow -PassThru -ArgumentList $Arguments
+if (-not $InstallProcess.WaitForExit(600000)) {
+    echo "Error: Vulkan SDK installer timed out"
+    Stop-Process -Id $InstallProcess.Id -Force -ErrorAction SilentlyContinue
+    Exit 1
+}
 $ExitCode = $InstallProcess.ExitCode
 
 if ($ExitCode -ne 0) {
