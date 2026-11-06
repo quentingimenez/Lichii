@@ -215,6 +215,17 @@ ComputePipeline::ComputePipeline(const Device& device_, Scheduler& scheduler, vk
     }
     std::copy_n(info.constant_buffer_used_sizes.begin(), uniform_buffer_sizes.size(),
                 uniform_buffer_sizes.begin());
+    // Ocarina of Time's sky ambient compute builds its output address as
+    // IMAD.WIDE pointer * 1 + 0x30, with the pointer at c0+0x20 and 0x30 in c1[0]. The storage
+    // buffer pass still binds c1[0] here, so every atomic add goes to the null buffer and the
+    // scene reads a zero sky ambient (neon green canopy on AMD). Bind the real pointer instead;
+    // the pass's access offset is zero, so the adds land at the start of the buffer.
+    if (shader_hash == 0xb76d7b3e9e93093dULL && !info.storage_buffers_descriptors.empty()) {
+        auto& desc = info.storage_buffers_descriptors[0];
+        desc.cbuf_index = 0;
+        desc.cbuf_offset = 0x20;
+        desc.indirect_offset = ~0U;
+    }
     num_descriptor_entries = NumDescriptorEntries(info);
 
     DescriptorLayoutBuilder builder{device};
