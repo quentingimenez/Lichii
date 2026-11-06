@@ -8,6 +8,7 @@ on:
       - custom/oot-upstream
       - custom/oot-upstream-unopt
       - custom/oot-upstream-noaa-unopt
+      - custom/oot-upstream-noaa-unopt-fog
     paths:
       - "src/**"
       - ".github/workflows/build-windows.yml"
