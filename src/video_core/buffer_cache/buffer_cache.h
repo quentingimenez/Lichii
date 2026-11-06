@@ -2631,10 +2631,11 @@ Binding BufferCache<P>::StorageBufferBinding(GPUVAddr ssbo_addr, u32 cbuf_index,
             static_cast<u32>(gpu_memory->GetMemoryLayoutSize(gpu_addr));
         // A pointer read from a table in memory is the base of an object pool, read anywhere in
         // it (Ocarina of Time's grass instances lie 12-18 MiB past theirs): bound to the end of
-        // its mapping, up to 64 MiB. The 8 MiB cap made those reads return 0 and culled every
-        // blade. Written pools keep the cap: a write marks the whole binding GPU-modified.
+        // its mapping, up to 24 MiB. The 8 MiB cap made those reads return 0 and culled every
+        // blade; 64 MiB device-losses AMD's Windows Vulkan driver during save loading.
+        // Written pools keep the cap: a write marks the whole binding GPU-modified.
         if (table_pointer && !is_written) {
-            return (std::min)(memory_layout_size, static_cast<u32>(64_MiB));
+            return (std::min)(memory_layout_size, static_cast<u32>(24_MiB));
         }
         // A native (Switch 2) compute program's pointer is bare: the word after it is another
         // parameter (a dimension, stride or texture handle), not an NVN buffer size. Taking it as
