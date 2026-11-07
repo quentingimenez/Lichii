@@ -101,7 +101,7 @@ private:
             }
             return;
         }
-        if (Nx2Perf::Verify()) {
+        if (Nx2Perf::Verify(7)) {
             static std::atomic<u32> logged{};
             const size_t check_begin = (std::max)(begin, full_begin);
             const size_t check_end = (std::min)(end, full_end);
