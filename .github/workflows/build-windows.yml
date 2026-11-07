@@ -14,7 +14,6 @@ on:
       - custom/oot-perf2
       - custom/oot-next
       - custom/oot-astc-cache
-      - custom/oot-astc-foliage
     paths:
       - "src/**"
       - ".github/workflows/build-windows.yml"
@@ -168,7 +167,6 @@ jobs:
           path: build/release/bin/
           if-no-files-found: error
           retention-days: 7
-
 
 
 
