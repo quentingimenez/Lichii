@@ -13,6 +13,7 @@ on:
       - custom/oot-perf
       - custom/oot-perf2
       - custom/oot-next
+      - custom/oot-hud
     paths:
       - "src/**"
       - ".github/workflows/build-windows.yml"
@@ -166,5 +167,6 @@ jobs:
           path: build/release/bin/
           if-no-files-found: error
           retention-days: 7
+
 
 
