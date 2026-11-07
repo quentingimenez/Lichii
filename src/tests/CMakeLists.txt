@@ -70,6 +70,7 @@ add_executable(tests
     video_core/command_snapshot_suspensions.cpp
     video_core/pending_maps.cpp
     video_core/maxwell_fast_method.cpp
+    video_core/maxwell_cb_per_word.cpp
     hid_core/sensor_info.cpp
     common/paged_scalar.cpp
     common/queue_lifetime.cpp
@@ -161,6 +162,14 @@ if (TARGET dynarmic::dynarmic)
 endif()
 
 add_test(NAME tests COMMAND tests)
+
+# EDEN_NX2_CB_PER_WORD is read once when the first constant buffer run is
+# handled, so exercise the switch in its own process. The test skips under the
+# plain tests run and runs here with the environment set.
+add_test(NAME tests_cb_per_word COMMAND tests "[maxwell_cb_per_word]")
+set_tests_properties(tests_cb_per_word PROPERTIES
+    ENVIRONMENT "EDEN_NX2_CB_PER_WORD=1"
+    WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")
 
 if (WIN32 AND ARCHITECTURE_x86_64)
     add_executable(event_wait_probe ../../tools/nx2/event_wait_probe.cpp)

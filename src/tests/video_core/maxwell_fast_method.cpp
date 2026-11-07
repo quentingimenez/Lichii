@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <array>
 #include <chrono>
+#include <cstdlib>
 #include <cstring>
 #include <functional>
 #include <memory>
@@ -317,6 +318,25 @@ TEST_CASE("Maxwell3D constant buffer word runs match single CallMethod writes",
         }
         f.Compare();
     }
+}
+
+TEST_CASE("Maxwell3D per-word constant buffer switch matches single CallMethod writes",
+          "[video_core][maxwell_fast_method][maxwell_cb_per_word]") {
+    // The switch is read once per process: CTest's tests_cb_per_word sets it
+    // before this binary starts. The source test checks the branch itself.
+    const char* per_word = std::getenv("EDEN_NX2_CB_PER_WORD");
+    if (per_word == nullptr || per_word[0] != '1') {
+        SKIP("Run through CTest's tests_cb_per_word (EDEN_NX2_CB_PER_WORD=1)");
+    }
+    Fixture f;
+    constexpr std::array<u32, 4> methods{CbData, CbData + 1, CbData + 2, CbData + 3};
+    constexpr std::array<u32, 4> arguments{0x12345678, 0x87654321, 0xdeadbeef, 0x0badf00d};
+    f.fast.CallConstBufferWords(f.system, methods.data(), arguments.data(),
+                                static_cast<u32>(methods.size()));
+    for (size_t i = 0; i < methods.size(); ++i) {
+        f.slow.CallMethod(f.system, methods[i], arguments[i], true);
+    }
+    f.Compare();
 }
 
 TEST_CASE("GpuSplit CB batching respects device remaps within GPU big pages",
