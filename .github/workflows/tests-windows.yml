@@ -1,0 +1,155 @@
+name: tests-windows
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - custom/oot-cb-perword
+      - custom/oot-cb-perword-test
+    paths:
+      - "src/**"
+      - ".github/workflows/tests-windows.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tests-windows-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  windows-tests:
+    name: windows-x86_64 tests
+    runs-on: windows-2022
+    env:
+      SCCACHE_DIR: ${{ github.workspace }}/.sccache
+      SCCACHE_CACHE_SIZE: 3G
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v5
+
+      - name: Set up MSVC
+        uses: ilammy/msvc-dev-cmd@v1
+
+      - name: Install Qt on Windows
+        uses: jurplel/install-qt-action@v4
+        with:
+          version: "6.8.3"
+          host: windows
+          target: desktop
+          arch: win64_msvc2022_64
+          modules: qtcharts
+          cache: true
+
+      - name: Install sccache on Windows
+        shell: pwsh
+        run: |
+          $zip = Join-Path $env:RUNNER_TEMP 'sccache.zip'
+          Invoke-WebRequest -OutFile $zip https://github.com/mozilla/sccache/releases/download/v0.19.0/sccache-v0.19.0-x86_64-pc-windows-msvc.zip
+          Expand-Archive $zip -DestinationPath (Join-Path $env:RUNNER_TEMP 'sccache')
+          $bin = (Get-ChildItem -Recurse -Filter sccache.exe (Join-Path $env:RUNNER_TEMP 'sccache')).DirectoryName
+          $bin | Out-File -Append -Encoding utf8 $env:GITHUB_PATH
+
+      - name: Cache Vulkan SDK
+        id: vulkan-cache
+        uses: actions/cache@v5
+        with:
+          path: C:/VulkanSDK/1.4.341.1
+          key: vulkan-sdk-windows-1.4.341.1-v1
+
+      - name: Install Vulkan SDK on Windows
+        if: steps.vulkan-cache.outputs.cache-hit != 'true'
+        shell: pwsh
+        timeout-minutes: 10
+        run: ./tools/windows/install-vulkan-sdk.ps1
+
+      - name: Set up Vulkan SDK
+        shell: pwsh
+        run: |
+          "VULKAN_SDK=C:/VulkanSDK/1.4.341.1" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "C:/VulkanSDK/1.4.341.1/Bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+
+      - name: Verify Vulkan tools on Windows
+        shell: pwsh
+        run: glslangValidator --version
+
+      - name: Restore CPM downloads
+        id: cpm-cache
+        uses: actions/cache/restore@v5
+        with:
+          path: .cache/cpm
+          key: cpm-windows-x86_64-v2-${{ hashFiles('cpmfile.json', 'CMakeLists.txt', 'CMakeModules/CPM*.cmake', 'externals/**/CMakeLists.txt', 'src/**/CMakeLists.txt') }}
+          restore-keys: |
+            cpm-windows-x86_64-v2-
+            cpm-Windows-
+
+      - name: Restore compiler objects
+        id: compiler-cache
+        uses: actions/cache/restore@v5
+        with:
+          path: |
+            .ccache
+            .sccache
+          key: objects-windows-x86_64-test-v1-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: |
+            objects-windows-x86_64-v2-
+            objects-windows-x86_64-test-v1-
+
+      - name: Configure tests
+        shell: bash
+        run: >-
+          cmake -S . -B build/tests -G Ninja
+          -DCMAKE_BUILD_TYPE=Release
+          -DBUILD_TESTING=ON
+          -DYUZU_TESTS=ON
+          -DYUZU_CMD=OFF
+          -DYUZU_ROOM=OFF
+          -DYUZU_ROOM_STANDALONE=OFF
+          -DYUZU_USE_BUNDLED_QT=OFF
+          -DYUZU_USE_BUNDLED_SDL3=ON
+          -DENABLE_UPDATE_CHECKER=OFF
+          -DUSE_DISCORD_PRESENCE=OFF
+          -DCMAKE_C_COMPILER_LAUNCHER=sccache
+          -DCMAKE_CXX_COMPILER_LAUNCHER=sccache
+
+      - name: Build tests
+        shell: pwsh
+        run: |
+          sccache --zero-stats
+          cmake --build build/tests --target tests --parallel
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          sccache --show-stats
+
+      - name: Run regression tests
+        shell: pwsh
+        run: ctest --test-dir build/tests -R "tests_cb_per_word|^tests$" --output-on-failure
+
+      - name: Upload test log
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: tests-windows-log-${{ github.sha }}
+          path: build/tests/Testing/Temporary/LastTest.log
+          if-no-files-found: warn
+          retention-days: 7
+
+      - name: Stop sccache on Windows
+        if: always()
+        shell: pwsh
+        run: sccache --stop-server
+
+      - name: Save compiler objects
+        if: always()
+        uses: actions/cache/save@v5
+        with:
+          path: |
+            .ccache
+            .sccache
+          key: objects-windows-x86_64-test-v1-${{ github.run_id }}-${{ github.run_attempt }}
+
+      - name: Save CPM downloads
+        if: steps.cpm-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v5
+        with:
+          path: .cache/cpm
+          key: ${{ steps.cpm-cache.outputs.cache-primary-key }}
