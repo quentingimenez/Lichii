@@ -8,6 +8,9 @@
 #include <limits>
 #include <array>
 #include <cstdlib>
+#include <cstring>
+#include <filesystem>
+#include <fstream>
 #include <optional>
 #include <set>
 #include <span>
@@ -18,9 +21,12 @@
 #include <boost/container/small_vector.hpp>
 #include <bit>
 #include <numeric>
+#include <fmt/format.h>
 #include "common/alignment.h"
 #include "common/bit_util.h"
 #include "common/div_ceil.h"
+#include "common/fs/fs.h"
+#include "common/fs/path_util.h"
 #include "common/literals.h"
 #include "common/settings.h"
 #include "shader_recompiler/byte_addressed_image.h"
@@ -1208,6 +1214,153 @@ void UseBc3ForSwitch2OnSmallCards(const Device& device) {
                 "Set EDEN_NX2_KEEP_ASTC=1 to keep them uncompressed",
                 memory >> 20);
     Settings::SetAstcRecompressionOverride(Settings::AstcRecompression::Bc3);
+}
+
+// The BC1/BC3 bytes a given ASTC source produces are fixed: keep them under <cache>/astc so a
+// texture the GPU decodes and re-compresses on its first use decodes once per source and not once
+// per session. EDEN_NX2_ASTC_CACHE=0 disables it.
+constexpr u32 ASTC_CACHE_VERSION = 1;
+constexpr u32 ASTC_CACHE_MAGIC = 0x43545341;
+constexpr u64 ASTC_CACHE_LIMIT = u64{8} << 30;
+
+struct AstcCacheHeader {
+    u32 magic;
+    u32 version;
+    u64 hash;
+    u64 data_size;
+    u32 format;
+    u32 width;
+    u32 height;
+    u32 depth;
+    u32 levels;
+    u32 layers;
+    u32 samples;
+    u32 type;
+    u32 bc3;
+    u32 layer_stride;
+    u32 block_x;
+    u32 block_y;
+    u32 block_z;
+    u32 tile_width_spacing;
+    u32 native_tiling;
+    u32 reserved[3];
+};
+static_assert(sizeof(AstcCacheHeader) == 96);
+
+[[nodiscard]] u64 AstcCacheHash(const AstcCacheHeader& header, std::span<const u8> source) {
+    u64 hash = 0xcbf29ce484222325ULL;
+    const auto mix = [&hash](std::span<const u8> bytes) {
+        for (const u8 byte : bytes) {
+            hash = (hash ^ byte) * 0x100000001b3ULL;
+        }
+    };
+    mix({reinterpret_cast<const u8*>(&header), sizeof(header)});
+    mix(source);
+    return hash;
+}
+
+class AstcDecodeCache {
+public:
+    AstcDecodeCache() {
+        const char* disabled = std::getenv("EDEN_NX2_ASTC_CACHE");
+        if (disabled != nullptr && std::strcmp(disabled, "0") == 0) {
+            return;
+        }
+        directory = Common::FS::GetEdenPath(Common::FS::EdenPath::CacheDir) / "astc";
+        if (!Common::FS::CreateDirs(directory)) {
+            LOG_WARNING(Render_Vulkan, "Failed to create the ASTC decode cache directory");
+            directory.clear();
+            return;
+        }
+        std::error_code error;
+        for (const auto& entry : std::filesystem::directory_iterator(directory, error)) {
+            std::error_code size_error;
+            if (!entry.is_regular_file(size_error)) {
+                continue;
+            }
+            const auto size = entry.file_size(size_error);
+            if (!size_error) {
+                used_bytes += size;
+            }
+        }
+        LOG_INFO(Render_Vulkan, "ASTC decode cache: {} ({} MiB)",
+                 Common::FS::PathToUTF8String(directory), used_bytes >> 20);
+    }
+
+    [[nodiscard]] bool Enabled() const noexcept {
+        return !directory.empty();
+    }
+
+    [[nodiscard]] bool CanSave(u64 data_size) const noexcept {
+        return Enabled() &&
+               used_bytes + data_size + sizeof(AstcCacheHeader) <= ASTC_CACHE_LIMIT;
+    }
+
+    bool Load(const AstcCacheHeader& expected, std::span<u8> data) {
+        const auto file = File(expected.hash);
+        std::ifstream stream(file, std::ios::binary | std::ios::ate);
+        if (!stream.is_open()) {
+            return false;
+        }
+        if (stream.tellg() !=
+            static_cast<std::streamoff>(sizeof(AstcCacheHeader) + data.size())) {
+            std::error_code error;
+            std::filesystem::remove(file, error);
+            return false;
+        }
+        std::array<u8, sizeof(AstcCacheHeader)> header;
+        stream.seekg(0);
+        stream.read(reinterpret_cast<char*>(header.data()), header.size());
+        if (!stream.good() || std::memcmp(header.data(), &expected, sizeof(expected)) != 0) {
+            return false;
+        }
+        stream.read(reinterpret_cast<char*>(data.data()), data.size());
+        return stream.good();
+    }
+
+    void Save(const AstcCacheHeader& header, std::span<const u8> data) {
+        const auto file = File(header.hash);
+        std::error_code error;
+        if (std::filesystem::exists(file, error)) {
+            return;
+        }
+        auto temporary = file;
+        temporary += ".tmp";
+        {
+            std::ofstream stream(temporary, std::ios::binary | std::ios::trunc);
+            stream.write(reinterpret_cast<const char*>(&header), sizeof(header));
+            stream.write(reinterpret_cast<const char*>(data.data()), data.size());
+            if (!stream.good()) {
+                stream.close();
+                std::filesystem::remove(temporary, error);
+                if (!warned) {
+                    warned = true;
+                    LOG_WARNING(Render_Vulkan, "Failed to write the ASTC decode cache");
+                }
+                return;
+            }
+        }
+        std::filesystem::rename(temporary, file, error);
+        if (error) {
+            std::filesystem::remove(temporary, error);
+            return;
+        }
+        used_bytes += sizeof(AstcCacheHeader) + data.size();
+    }
+
+private:
+    [[nodiscard]] std::filesystem::path File(u64 hash) const {
+        return directory / fmt::format("{:016x}.bin", hash);
+    }
+
+    std::filesystem::path directory;
+    u64 used_bytes{};
+    bool warned{};
+};
+
+AstcDecodeCache& GetAstcDecodeCache() {
+    static AstcDecodeCache cache;
+    return cache;
 }
 } // Anonymous namespace
 
@@ -4925,6 +5078,72 @@ void TextureCacheRuntime::TranscodeAstcToBcn(
     const u32 height = info.size.height;
     const u32 levels = static_cast<u32>(info.resources.levels);
     const u32 layers = static_cast<u32>(info.resources.layers);
+
+    // Encode every level into one buffer, then copy it into the image.
+    const bool bc3 = !IsOpaqueBc1Astc(device, info) &&
+                     Settings::GetAstcRecompression() != Settings::AstcRecompression::Bc1;
+    const u64 block_bytes = bc3 ? 16 : 8;
+    boost::container::small_vector<VideoCommon::BufferImageCopy, 16> copies;
+    u64 total = 0;
+    for (u32 level = 0; level < levels; ++level) {
+        const u32 level_width = (std::max)(width >> level, 1U);
+        const u32 level_height = (std::max)(height >> level, 1U);
+        const u32 blocks_x = Common::DivCeil(level_width, 4U);
+        const u32 blocks_y = Common::DivCeil(level_height, 4U);
+        const u64 size = u64{blocks_x} * blocks_y * layers * block_bytes;
+        copies.push_back({
+            .buffer_offset = total,
+            .buffer_size = size,
+            .buffer_row_length = blocks_x * 4,
+            .buffer_image_height = blocks_y * 4,
+            .image_subresource{
+                .base_level = static_cast<s32>(level),
+                .base_layer = 0,
+                .num_layers = static_cast<s32>(layers),
+            },
+            .image_offset{0, 0, 0},
+            .image_extent{level_width, level_height, 1},
+        });
+        total += size;
+    }
+
+    AstcDecodeCache& cache = GetAstcDecodeCache();
+    const size_t source_bytes = VideoCommon::MapSizeBytes(image);
+    const bool cacheable =
+        cache.Enabled() && total != 0 && map.mapped_span.size() >= source_bytes;
+    AstcCacheHeader header{};
+    if (cacheable) {
+        header = AstcCacheHeader{
+            .magic = ASTC_CACHE_MAGIC,
+            .version = ASTC_CACHE_VERSION,
+            .hash = 0,
+            .data_size = total,
+            .format = static_cast<u32>(info.format),
+            .width = width,
+            .height = height,
+            .depth = info.size.depth,
+            .levels = levels,
+            .layers = layers,
+            .samples = info.num_samples,
+            .type = static_cast<u32>(info.type),
+            .bc3 = bc3 ? 1U : 0U,
+            .layer_stride = info.layer_stride,
+            .block_x = info.block.x,
+            .block_y = info.block.y,
+            .block_z = info.block.z,
+            .tile_width_spacing = info.tile_width_spacing,
+            .native_tiling = info.native_tiling ? 1U : 0U,
+            .reserved = {},
+        };
+        header.hash = AstcCacheHash(header, map.mapped_span.first(source_bytes));
+        auto cached = staging_buffer_pool.Request(total, MemoryUsage::Upload);
+        if (cached.mapped_span.size() >= total &&
+            cache.Load(header, cached.mapped_span.first(total))) {
+            image.UploadMemory(cached.buffer, cached.offset, copies);
+            return;
+        }
+    }
+
     // The BC encoder declares layout(rgba8). Identical byte layout is not enough:
     // its storage image view must have the matching R8G8B8A8_UNORM format.
     constexpr VkFormat DecodeFormat = VK_FORMAT_R8G8B8A8_UNORM;
@@ -4981,33 +5200,6 @@ void TextureCacheRuntime::TranscodeAstcToBcn(
         },
         map, swizzles);
 
-    // Encode every level into one buffer, then copy it into the image.
-    const bool bc3 = !IsOpaqueBc1Astc(device, info) &&
-                     Settings::GetAstcRecompression() != Settings::AstcRecompression::Bc1;
-    const u64 block_bytes = bc3 ? 16 : 8;
-    boost::container::small_vector<VideoCommon::BufferImageCopy, 16> copies;
-    u64 total = 0;
-    for (u32 level = 0; level < levels; ++level) {
-        const u32 level_width = (std::max)(width >> level, 1U);
-        const u32 level_height = (std::max)(height >> level, 1U);
-        const u32 blocks_x = Common::DivCeil(level_width, 4U);
-        const u32 blocks_y = Common::DivCeil(level_height, 4U);
-        const u64 size = u64{blocks_x} * blocks_y * layers * block_bytes;
-        copies.push_back({
-            .buffer_offset = total,
-            .buffer_size = size,
-            .buffer_row_length = blocks_x * 4,
-            .buffer_image_height = blocks_y * 4,
-            .image_subresource{
-                .base_level = static_cast<s32>(level),
-                .base_layer = 0,
-                .num_layers = static_cast<s32>(layers),
-            },
-            .image_offset{0, 0, 0},
-            .image_extent{level_width, level_height, 1},
-        });
-        total += size;
-    }
     const auto output = staging_buffer_pool.Request(total, MemoryUsage::DeviceLocal);
     for (u32 level = 0; level < levels; ++level) {
         bc_encoder_pass->Encode(*pending.views[level], copies[level].image_extent.width,
@@ -5025,6 +5217,29 @@ void TextureCacheRuntime::TranscodeAstcToBcn(
                                0, barrier);
     });
     image.UploadMemory(output.buffer, output.offset, copies);
+    // Read the encoded bytes back once and keep them for the next session.
+    if (cacheable && cache.CanSave(total)) {
+        auto readback = staging_buffer_pool.Request(total, MemoryUsage::Download);
+        if (readback.mapped_span.size() >= total) {
+            const VkBuffer source = output.buffer;
+            const VkBuffer destination = readback.buffer;
+            const VkDeviceSize source_offset = output.offset;
+            const VkDeviceSize destination_offset = readback.offset;
+            const VkDeviceSize size = total;
+            scheduler.Record(
+                [source, destination, source_offset, destination_offset,
+                 size](vk::CommandBuffer cmdbuf) {
+                    const VkBufferCopy copy{
+                        .srcOffset = source_offset,
+                        .dstOffset = destination_offset,
+                        .size = size,
+                    };
+                    cmdbuf.CopyBuffer(source, destination, copy);
+                });
+            scheduler.Finish();
+            cache.Save(header, readback.mapped_span.first(total));
+        }
+    }
     pending.tick = scheduler.CurrentTick();
     pending_transcodes.push_back(std::move(pending));
 }
