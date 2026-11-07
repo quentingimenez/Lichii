@@ -600,9 +600,20 @@ void Maxwell3D::CallConstBufferWords(Core::System& system, const u32* methods,
     for (u32 i = 0; i < count; ++i) {
         values[i] = replay ? shadow_state.reg_array[methods[i]] : arguments[i];
     }
-    if (VideoCommon::Nx2Perf::Verify()) {
+    // A fast batch can defer a draw after the first words but writes the whole batch only
+    // afterwards, so that draw may read stale per-object data. Process one word at a time
+    // when EDEN_NX2_CB_PER_WORD=1; the verification path does the same plus a readback.
+    static const bool per_word = [] {
+        const char* value = std::getenv("EDEN_NX2_CB_PER_WORD");
+        return value != nullptr && value[0] == '1';
+    }();
+    const bool verify = VideoCommon::Nx2Perf::Verify();
+    if (verify || per_word) {
         for (u32 i = 0; i < count; ++i) {
             CallMethod(system, methods[i], arguments[i], true);
+        }
+        if (!verify) {
+            return;
         }
         std::array<u32, 64> written;
         const bool mapped = memory_manager.IsFullyMappedRange(address + offset, bytes);

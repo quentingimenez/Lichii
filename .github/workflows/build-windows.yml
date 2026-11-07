@@ -13,6 +13,7 @@ on:
       - custom/oot-perf
       - custom/oot-perf2
       - custom/oot-next
+      - custom/oot-cb-perword
     paths:
       - "src/**"
       - ".github/workflows/build-windows.yml"
