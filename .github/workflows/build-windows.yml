@@ -14,6 +14,7 @@ on:
       - custom/oot-perf2
       - custom/oot-next
       - custom/oot-astc-cache
+      - custom/oot-foliage-434
     paths:
       - "src/**"
       - ".github/workflows/build-windows.yml"
