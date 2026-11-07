@@ -4,6 +4,8 @@
 // SPDX-FileCopyrightText: Copyright 2023 yuzu Emulator Project
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+#include <cstdlib>
+
 #include "common/logging.h"
 #include "core/core.h"
 #include "core/core_timing.h"
@@ -49,6 +51,15 @@ constexpr auto npad_update_ns = std::chrono::nanoseconds{1 * 1000 * 1000};    //
 constexpr auto default_update_ns = std::chrono::nanoseconds{4 * 1000 * 1000}; // (4ms, 1000Hz)
 constexpr auto mouse_keyboard_update_ns = std::chrono::nanoseconds{8 * 1000 * 1000}; // (8ms, 125Hz)
 constexpr auto motion_update_ns = std::chrono::nanoseconds{5 * 1000 * 1000};         // (5ms, 200Hz)
+
+std::chrono::nanoseconds HidUpdateInterval(const char* name, std::chrono::nanoseconds fallback) {
+    const char* value = std::getenv(name);
+    if (value == nullptr) {
+        return fallback;
+    }
+    const long long microseconds = std::strtoll(value, nullptr, 10);
+    return microseconds > 0 ? std::chrono::microseconds{microseconds} : fallback;
+}
 
 ResourceManager::ResourceManager(Core::System& system_,
                                  std::shared_ptr<HidFirmwareSettings> settings)
@@ -251,12 +262,17 @@ void ResourceManager::InitializeHidCommonSampler() {
     sleep_button->SetAppletResource(applet_resource, &shared_mutex);
     capture_button->SetAppletResource(applet_resource, &shared_mutex);
 
-    system.CoreTiming().ScheduleLoopingEvent(npad_update_ns, npad_update_ns, npad_update_event);
-    system.CoreTiming().ScheduleLoopingEvent(default_update_ns, default_update_ns,
+    const auto npad_interval = HidUpdateInterval("EDEN_NX2_HID_PAD_US", npad_update_ns);
+    const auto default_interval = HidUpdateInterval("EDEN_NX2_HID_DEFAULT_US", default_update_ns);
+    const auto mouse_interval =
+        HidUpdateInterval("EDEN_NX2_HID_MOUSE_US", mouse_keyboard_update_ns);
+    const auto motion_interval = HidUpdateInterval("EDEN_NX2_HID_MOTION_US", motion_update_ns);
+    system.CoreTiming().ScheduleLoopingEvent(npad_interval, npad_interval, npad_update_event);
+    system.CoreTiming().ScheduleLoopingEvent(default_interval, default_interval,
                                              default_update_event);
-    system.CoreTiming().ScheduleLoopingEvent(mouse_keyboard_update_ns, mouse_keyboard_update_ns,
+    system.CoreTiming().ScheduleLoopingEvent(mouse_interval, mouse_interval,
                                              mouse_keyboard_update_event);
-    system.CoreTiming().ScheduleLoopingEvent(motion_update_ns, motion_update_ns,
+    system.CoreTiming().ScheduleLoopingEvent(motion_interval, motion_interval,
                                              motion_update_event);
 }
 

@@ -10,6 +10,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cstdlib>
 #include <memory>
 #include <numeric>
 #include <stdexcept>
@@ -901,6 +902,11 @@ template <class P>
 void BufferCache<P>::CommitAsyncFlushesHigh() {
     AccumulateFlushes();
 
+    static const bool safe_preflush = [] {
+        const char* value = std::getenv("EDEN_NX2_PREFLUSH_SAFE");
+        return value != nullptr && value[0] == '1';
+    }();
+
     if (committed_gpu_modified_ranges.empty()) {
         async_buffers.emplace_back(std::optional<Async_Buffer>{});
         return;
@@ -969,6 +975,7 @@ void BufferCache<P>::CommitAsyncFlushesHigh() {
     auto download_staging = runtime.DownloadStagingBuffer(total_size_bytes, true);
     boost::container::small_vector<BufferCopy, 4> normalized_copies;
     Common::RangeSet<DAddr> download_ranges;
+    Common::RangeSet<DAddr> deferred_ranges;
     runtime.PreCopyBarrier();
     for (auto& [copy, buffer_id] : downloads) {
         copy.dst_offset += download_staging.offset;
@@ -977,6 +984,14 @@ void BufferCache<P>::CommitAsyncFlushesHigh() {
         Buffer& buffer = slot_buffers[buffer_id];
         second_copy.src_offset = static_cast<size_t>(buffer.CpuAddr()) + copy.src_offset;
         const DAddr orig_device_addr = static_cast<DAddr>(second_copy.src_offset);
+        if constexpr (!IS_OPENGL) {
+            if (safe_preflush && !runtime.IsFree(buffer.getWriteTick())) {
+                // The GPU write may still be in flight. Keep the range for a later fence instead
+                // of copying bytes the GPU has not finished writing.
+                deferred_ranges.Add(orig_device_addr, copy.size);
+                continue;
+            }
+        }
         if (Nx2Profile::Enabled()) {
             u64 on_dma_pages = 0;
             const auto& pages = Nx2Profile::DmaReadPages();
@@ -999,6 +1014,9 @@ void BufferCache<P>::CommitAsyncFlushesHigh() {
         normalized_copies.push_back(second_copy);
     }
     runtime.PostCopyBarrier();
+    deferred_ranges.ForEach([&](DAddr start, DAddr end) {
+        uncommitted_gpu_modified_ranges.Add(start, end - start);
+    });
     pending_downloads.emplace_back(std::move(normalized_copies));
     pending_download_ranges.emplace_back(std::move(download_ranges));
     async_buffers.emplace_back(download_staging);

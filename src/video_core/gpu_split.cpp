@@ -171,6 +171,10 @@ void GpuSplit::WaitForSpace(size_t words) {
     if (write_position + words - consumed_cache <= RingWords) {
         return;
     }
+    static const u32 space_spins = [] {
+        const char* value = std::getenv("EDEN_NX2_SPLIT_SPACE_SPIN");
+        return value != nullptr ? static_cast<u32>(std::strtoul(value, nullptr, 10)) : 4096U;
+    }();
     Publish();
     Nx2Profile::Scope scope{Nx2Profile::Zone::SplitDrain};
     for (u32 spins = 0;; ++spins) {
@@ -178,7 +182,7 @@ void GpuSplit::WaitForSpace(size_t words) {
         if (write_position + words - consumed_cache <= RingWords) {
             return;
         }
-        if (spins < 4096) {
+        if (spins < space_spins) {
             Pause();
         } else {
             std::this_thread::yield();
@@ -247,7 +251,11 @@ bool GpuSplit::WaitFor(u64 target, DrainSite site) {
 }
 
 void GpuSplit::Backoff(u32 spins, u64 target) {
-    if (spins < 16384) {
+    static const u32 front_spins = [] {
+        const char* value = std::getenv("EDEN_NX2_SPLIT_FRONT_SPIN");
+        return value != nullptr ? static_cast<u32>(std::strtoul(value, nullptr, 10)) : 16384U;
+    }();
+    if (spins < front_spins) {
         Pause();
         return;
     }
@@ -421,9 +429,14 @@ void GpuSplit::BackLoop(std::stop_token stop_token) {
         Nx2Profile::Report("GPU back thread");
         u64 available = published.load(std::memory_order_acquire);
         if (available == read_position) {
+            static const u32 back_spins = [] {
+                const char* value = std::getenv("EDEN_NX2_SPLIT_BACK_SPIN");
+                return value != nullptr ? static_cast<u32>(std::strtoul(value, nullptr, 10))
+                                        : 8192U;
+            }();
             Nx2Profile::Scope scope{Nx2Profile::Zone::SplitWait};
             // The front usually sends more within microseconds: spin briefly before sleeping.
-            for (u32 spins = 0; spins < 8192 && available == read_position &&
+            for (u32 spins = 0; spins < back_spins && available == read_position &&
                                 !hook_requested.load(std::memory_order_relaxed);
                  ++spins) {
                 Pause();

@@ -3546,7 +3546,8 @@ private:
                         PollSyncpts();
                         return std::nullopt;
                     });
-                system.CoreTiming().ScheduleLoopingEvent(SyncptPollInterval, SyncptPollInterval,
+                const auto poll_interval = SyncptPollInterval();
+                system.CoreTiming().ScheduleLoopingEvent(poll_interval, poll_interval,
                                                          m_syncpt_poll);
             }
         } else {
@@ -4037,7 +4038,16 @@ private:
         ReturnRawSession(system, ctx, std::move(nvsrv));
     }
 
-    static constexpr std::chrono::nanoseconds SyncptPollInterval{std::chrono::microseconds{500}};
+    static std::chrono::nanoseconds SyncptPollInterval() {
+        static const auto interval = [] {
+            const char* value = std::getenv("EDEN_NX2_SYNCPT_POLL_US");
+            const long long microseconds =
+                value != nullptr ? std::strtoll(value, nullptr, 10) : 500LL;
+            return std::chrono::microseconds{
+                (std::max)(100LL, (std::min)(microseconds, 10000LL))};
+        }();
+        return interval;
+    }
 
     std::shared_ptr<Nx2NativeObjects> m_objects{std::make_shared<Nx2NativeObjects>()};
     KernelHelpers::ServiceContext m_context;
